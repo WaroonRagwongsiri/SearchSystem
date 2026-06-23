@@ -1,0 +1,48 @@
+services:
+  db:
+    # Plain Postgres 16 (the env mirror only serves official library/* images,
+    # so pgvector/pgvector can't be pulled here). This is fine for now: step 1
+    # only stores JSON — pgvector isn't needed until embeddings (PLAN step 3),
+    # at which point a Dockerfile builds pgvector from source on this same
+    # postgres:16 base (same PG major => volume stays compatible, no migration).
+    # pg_trgm + fuzzystrmatch ship as contrib in postgres:16 already.
+    build: ./db                # postgres:16 + pgvector built from source (see db/Dockerfile)
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: db          # inside compose: reach the db service by name, not localhost
+      POSTGRES_PORT: 5432
+      EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT}  # query embedding for vector search
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

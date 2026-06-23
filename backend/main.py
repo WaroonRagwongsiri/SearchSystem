@@ -1,0 +1,156 @@
+import os
+
+import httpx
+from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import Session
+
+from db import Base, SessionLocal, engine
+from models import Dictionary  # noqa: F401  (registers model on Base.metadata)
+
+Base.metadata.create_all(engine)
+
+app = FastAPI(title="PocSearch")
+# ponytail: allow all origins — local dev POC, no auth/cookies. Tighten to the real frontend origin(s) in prod.
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# --- search config (deliberate, not arbitrary — see CLAUDE.md "algorithms to get right") ---
+EMBED_URL = os.environ.get("EMBEDDING_ENDPOINT", "").rstrip("/") + "/v1/embeddings"
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "BAAI/bge-m3")
+RRF_K = 60            # standard RRF constant
+CANDIDATES = 100      # per-signal candidate pool before fusion
+# per-signal weights: lexical (tsvector) dominant, fuzzy (trigram) secondary, vector least — per ranking spec.
+# Note: tsvector('simple') is coarse for unsegmented Thai; these weights favor it per request — tune if lexical underperforms.
+W_LEX, W_FUZZY, W_VEC = 0.6, 0.3, 0.1
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+class WordMap(BaseModel):
+    ancient_word: str
+    modern_definition: str
+
+
+@app.post("/add_new_word_map")
+def add_new_word_map(wm: WordMap, db: Session = Depends(get_db)):
+    """Upsert a historical→modern Thai word mapping, keyed on ancient_word."""
+    stmt = pg_insert(Dictionary).values(**wm.model_dump())
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["ancient_word"],
+        set_={"modern_definition": stmt.excluded.modern_definition},
+    )
+    db.execute(stmt)
+    db.commit()
+    return wm
+
+
+def _embed_query(q: str) -> list[float]:
+    r = httpx.post(EMBED_URL, json={"model": EMBED_MODEL, "input": [q]}, timeout=30)
+    r.raise_for_status()
+    return r.json()["data"][0]["embedding"]
+
+
+def _row(r, score):
+    return {"id": r["id"], "score": round(float(score), 4), "modernized_content": r["modernized_content"]}
+
+
+def _lexfuzzy(db: Session, q: str, limit: int, offset: int):
+    # weighted tsvector rank + trigram word_similarity (PLAN §4 lexical+fuzzy)
+    sql = text(
+        """
+        SELECT id, modernized_content,
+          ( :w_lex * (ts_rank(search_tsvector, plainto_tsquery('simple', :q)) /
+                      (ts_rank(search_tsvector, plainto_tsquery('simple', :q)) + 1.0))
+            + :w_fuzzy * word_similarity(:q, modernized_content)
+          ) AS score
+        FROM documents
+        WHERE modernized_content IS NOT NULL
+          AND word_similarity(:q, modernized_content) > 0.1
+        ORDER BY score DESC
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    rows = db.execute(sql, {"q": q, "w_lex": W_LEX, "w_fuzzy": W_FUZZY, "limit": limit, "offset": offset}).all()
+    return [{"id": r[0], "score": round(float(r[2]), 4), "modernized_content": r[1]} for r in rows]
+
+
+def _hybrid(db: Session, q: str, limit: int, offset: int):
+    vec = "[" + ",".join(f"{x:.7f}" for x in _embed_query(q)) + "]"
+    trgm = db.execute(
+        text(
+            "SELECT id, word_similarity(:q, modernized_content) s FROM documents "
+            "WHERE modernized_content IS NOT NULL AND word_similarity(:q, modernized_content) > 0.1 "
+            "ORDER BY s DESC LIMIT :c"
+        ),
+        {"q": q, "c": CANDIDATES},
+    ).all()
+    ts = db.execute(
+        text(
+            "SELECT id, ts_rank(search_tsvector, plainto_tsquery('simple', :q)) s FROM documents "
+            "WHERE search_tsvector @@ plainto_tsquery('simple', :q) ORDER BY s DESC LIMIT :c"
+        ),
+        {"q": q, "c": CANDIDATES},
+    ).all()
+    vec_rows = db.execute(
+        text(
+            "SELECT id, 1 - (embedding <=> CAST(:v AS vector)) s FROM documents "
+            "WHERE embedding IS NOT NULL ORDER BY embedding <=> CAST(:v AS vector) LIMIT :c"
+        ),
+        {"v": vec, "c": CANDIDATES},
+    ).all()
+
+    # gather per-doc ranks from each signal's list
+    seen: dict[str, dict] = {}
+    for rank, r in enumerate(trgm):
+        seen.setdefault(r[0], {})["trgm"] = rank
+    for rank, r in enumerate(ts):
+        seen.setdefault(r[0], {})["ts"] = rank
+    for rank, r in enumerate(vec_rows):
+        seen.setdefault(r[0], {})["vec"] = rank
+    # weighted RRF: lexical > fuzzy > vector (per ranking spec)
+    weights = {"ts": W_LEX, "trgm": W_FUZZY, "vec": W_VEC}
+    fused = sorted(
+        ((did, sum(weights[sig] / (RRF_K + rk) for sig, rk in sigs.items())) for did, sigs in seen.items()),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    page = fused[offset : offset + limit]
+    content = {}
+    if page:
+        ids = [d[0] for d in page]
+        content = dict(
+            db.execute(
+                text("SELECT id, coalesce(modernized_content, json_data->>'description') FROM documents WHERE id = ANY(:ids)"),
+                {"ids": ids},
+            ).all()
+        )
+    return [{"id": did, "score": round(score, 4), "modernized_content": content.get(did)} for did, score in page]
+
+
+@app.get("/search")
+def search(q: str, limit: int = 10, offset: int = 0, vector: bool = True, db: Session = Depends(get_db)):
+    """Hybrid search. vector=true (default) → RRF over lexical+fuzzy+vector; vector=false → weighted lexical+fuzzy."""
+    mode = "lex+fuzzy+vector (RRF)" if vector else "lex+fuzzy (weighted)"
+    if not q.strip():
+        return {"results": [], "total": 0, "mode": mode}
+    results = _hybrid(db, q, limit, offset) if vector else _lexfuzzy(db, q, limit, offset)
+    return {"results": results, "total": len(results), "mode": mode}
+
+
+@app.get("/health")
+def health(db: Session = Depends(get_db)):
+    return {
+        "documents": db.execute(text("SELECT count(*) FROM documents")).scalar_one(),
+        "modernized": db.execute(text("SELECT count(*) FROM documents WHERE modernized_content IS NOT NULL")).scalar_one(),
+        "embedded": db.execute(text("SELECT count(*) FROM documents WHERE embedding IS NOT NULL")).scalar_one(),
+        "dictionary": db.execute(text("SELECT count(*) FROM dictionary")).scalar_one(),
+    }
