@@ -7,6 +7,12 @@ export async function search(q, { limit = 10, offset = 0, vector = true } = {}) 
   return res.json();
 }
 
+export async function getDocument(id) {
+  const res = await fetch(`${API_URL}/document/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(`document fetch failed: ${res.status}`);
+  return res.json();
+}
+
 export async function addWordMap(ancient_word, modern_definition) {
   const res = await fetch(`${API_URL}/add_new_word_map`, {
     method: "POST",

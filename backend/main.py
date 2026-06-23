@@ -1,7 +1,7 @@
 import os
 
 import httpx
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -25,6 +25,12 @@ CANDIDATES = 100      # per-signal candidate pool before fusion
 # per-signal weights: lexical (tsvector) dominant, fuzzy (trigram) secondary, vector least — per ranking spec.
 # Note: tsvector('simple') is coarse for unsegmented Thai; these weights favor it per request — tune if lexical underperforms.
 W_LEX, W_FUZZY, W_VEC = 0.6, 0.3, 0.1
+
+# Score floor for the lexical/fuzzy combined score. The loose trigram candidate filter
+# (word_similarity > 0.1) admits a long tail of near-misses scoring ~0.08; real hits land
+# ~0.20+. 0.15 sits in that gap and drops the noise (e.g. ยกเลิก → 0 results, honestly).
+# RRF (hybrid) scores live on a ~100× smaller scale, so it defaults OFF there; override via ?min_score.
+MIN_SCORE_LEX = 0.15
 
 
 def get_db():
@@ -59,36 +65,39 @@ def _embed_query(q: str) -> list[float]:
     return r.json()["data"][0]["embedding"]
 
 
-def _row(r, score):
-    return {"id": r["id"], "score": round(float(score), 4), "modernized_content": r["modernized_content"]}
-
-
-def _lexfuzzy(db: Session, q: str, limit: int, offset: int):
-    # weighted tsvector rank + trigram word_similarity (PLAN §4 lexical+fuzzy)
-    sql = text(
-        """
-        SELECT id, modernized_content,
-          ( :w_lex * (ts_rank(search_tsvector, plainto_tsquery('simple', :q)) /
-                      (ts_rank(search_tsvector, plainto_tsquery('simple', :q)) + 1.0))
-            + :w_fuzzy * word_similarity(:q, modernized_content)
-          ) AS score
-        FROM documents
-        WHERE modernized_content IS NOT NULL
-          AND word_similarity(:q, modernized_content) > 0.1
-        ORDER BY score DESC
-        LIMIT :limit OFFSET :offset
-        """
+def _lexfuzzy(db: Session, q: str, limit: int, offset: int, min_score: float):
+    # weighted tsvector rank + trigram word_similarity over the RAW text (PLAN §4 lexical+fuzzy)
+    where = "raw_content <> '' AND word_similarity(:q, raw_content) > 0.1"
+    score_expr = (
+        "( :w_lex * (ts_rank(search_tsvector, plainto_tsquery('simple', :q)) / "
+        "(ts_rank(search_tsvector, plainto_tsquery('simple', :q)) + 1.0)) "
+        "+ :w_fuzzy * word_similarity(:q, raw_content) )"
     )
-    rows = db.execute(sql, {"q": q, "w_lex": W_LEX, "w_fuzzy": W_FUZZY, "limit": limit, "offset": offset}).all()
-    return [{"id": r[0], "score": round(float(r[2]), 4), "modernized_content": r[1]} for r in rows]
+    inner = (
+        f"SELECT id, json_data->>'subject' AS subject, json_data->>'description' AS description, "
+        f"{score_expr} AS score FROM documents WHERE {where}"
+    )
+    params = {"q": q, "w_lex": W_LEX, "w_fuzzy": W_FUZZY, "ms": min_score}
+    total = db.execute(text(f"SELECT count(*) FROM ({inner}) t WHERE score >= :ms"), params).scalar_one()
+    rows = db.execute(
+        text(
+            f"SELECT id, subject, description, score FROM ({inner}) t "
+            "WHERE score >= :ms ORDER BY score DESC LIMIT :limit OFFSET :offset"
+        ),
+        {**params, "limit": limit, "offset": offset},
+    ).all()
+    return (
+        [{"id": r[0], "score": round(float(r[3]), 4), "subject": r[1], "description": r[2]} for r in rows],
+        total,
+    )
 
 
-def _hybrid(db: Session, q: str, limit: int, offset: int):
+def _hybrid(db: Session, q: str, limit: int, offset: int, min_score: float):
     vec = "[" + ",".join(f"{x:.7f}" for x in _embed_query(q)) + "]"
     trgm = db.execute(
         text(
-            "SELECT id, word_similarity(:q, modernized_content) s FROM documents "
-            "WHERE modernized_content IS NOT NULL AND word_similarity(:q, modernized_content) > 0.1 "
+            "SELECT id, word_similarity(:q, raw_content) s FROM documents "
+            "WHERE raw_content <> '' AND word_similarity(:q, raw_content) > 0.1 "
             "ORDER BY s DESC LIMIT :c"
         ),
         {"q": q, "c": CANDIDATES},
@@ -116,34 +125,62 @@ def _hybrid(db: Session, q: str, limit: int, offset: int):
         seen.setdefault(r[0], {})["ts"] = rank
     for rank, r in enumerate(vec_rows):
         seen.setdefault(r[0], {})["vec"] = rank
-    # weighted RRF: lexical > fuzzy > vector (per ranking spec)
+    # weighted RRF: lexical > fuzzy > vector (per ranking spec). Vector embeddings come
+    # from modernized text (modernize→embed); lexical/fuzzy rank the RAW text.
     weights = {"ts": W_LEX, "trgm": W_FUZZY, "vec": W_VEC}
     fused = sorted(
         ((did, sum(weights[sig] / (RRF_K + rk) for sig, rk in sigs.items())) for did, sigs in seen.items()),
         key=lambda x: x[1],
         reverse=True,
     )
+    if min_score > 0:  # RRF scores are ~100× smaller than lexical — default 0 = off (see MIN_SCORE_LEX)
+        fused = [x for x in fused if x[1] >= min_score]
     page = fused[offset : offset + limit]
     content = {}
     if page:
         ids = [d[0] for d in page]
-        content = dict(
-            db.execute(
-                text("SELECT id, coalesce(modernized_content, json_data->>'description') FROM documents WHERE id = ANY(:ids)"),
+        content = {
+            r[0]: {"subject": r[1], "description": r[2]}
+            for r in db.execute(
+                text(
+                    "SELECT id, json_data->>'subject' AS subject, json_data->>'description' AS description "
+                    "FROM documents WHERE id = ANY(:ids)"
+                ),
                 {"ids": ids},
             ).all()
-        )
-    return [{"id": did, "score": round(score, 4), "modernized_content": content.get(did)} for did, score in page]
+        }
+    return (
+        [
+            {"id": did, "score": round(score, 4), **content.get(did, {"subject": None, "description": None})}
+            for did, score in page
+        ],
+        len(fused),  # ponytail: hybrid total is bounded by the per-signal candidate pool (CANDIDATES×3), not all matches — true 2000/N paging only in vector=false mode.
+    )
 
 
 @app.get("/search")
-def search(q: str, limit: int = 10, offset: int = 0, vector: bool = True, db: Session = Depends(get_db)):
-    """Hybrid search. vector=true (default) → RRF over lexical+fuzzy+vector; vector=false → weighted lexical+fuzzy."""
+def search(
+    q: str,
+    limit: int = 10,
+    offset: int = 0,
+    vector: bool = True,
+    min_score: float | None = None,
+    db: Session = Depends(get_db),
+):
+    """Hybrid search. vector=true (default) → RRF over lexical+fuzzy+vector; vector=false → weighted lexical+fuzzy.
+
+    min_score drops results below a relevance floor before paging (keeps totals honest).
+    Defaults: lexical/fuzzy = MIN_SCORE_LEX (cuts trigram noise); RRF = 0 (different scale)."""
     mode = "lex+fuzzy+vector (RRF)" if vector else "lex+fuzzy (weighted)"
     if not q.strip():
         return {"results": [], "total": 0, "mode": mode}
-    results = _hybrid(db, q, limit, offset) if vector else _lexfuzzy(db, q, limit, offset)
-    return {"results": results, "total": len(results), "mode": mode}
+    if vector:
+        eff = min_score if min_score is not None else 0.0
+        results, total = _hybrid(db, q, limit, offset, eff)
+    else:
+        eff = min_score if min_score is not None else MIN_SCORE_LEX
+        results, total = _lexfuzzy(db, q, limit, offset, eff)
+    return {"results": results, "total": total, "mode": mode}
 
 
 @app.get("/health")
@@ -154,3 +191,12 @@ def health(db: Session = Depends(get_db)):
         "embedded": db.execute(text("SELECT count(*) FROM documents WHERE embedding IS NOT NULL")).scalar_one(),
         "dictionary": db.execute(text("SELECT count(*) FROM dictionary")).scalar_one(),
     }
+
+
+@app.get("/document/{doc_id}")
+def document(doc_id: str, db: Session = Depends(get_db)):
+    """Return the full RAW source record for one document (the link target from search results)."""
+    row = db.execute(text("SELECT json_data FROM documents WHERE id = :id"), {"id": doc_id}).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="document not found")
+    return {"id": doc_id, "raw": row[0]}
