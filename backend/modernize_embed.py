@@ -34,8 +34,15 @@ EMBED_BATCH = 64
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_size=WORKERS + 4, max_overflow=0)
 
 # Load dictionary once; modernization prompts include only entries whose ancient_word is in the text.
+# Inject the clean modern equivalent (modern_word, from modernize_dictionary.py) where present;
+# fall back to the raw scholarly entry otherwise.
 with engine.connect() as _c:
-    DICT = [(r[0], r[1]) for r in _c.execute(text("SELECT ancient_word, modern_definition FROM dictionary")).all()]
+    DICT = [
+        (r[0], r[1] or r[2])
+        for r in _c.execute(
+            text("SELECT ancient_word, modern_word, modern_definition FROM dictionary")
+        ).all()
+    ]
 print(f"loaded {len(DICT)} dictionary entries", flush=True)
 
 SYSTEM = (

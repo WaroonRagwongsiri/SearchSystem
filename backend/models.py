@@ -1,3 +1,5 @@
+from typing import Optional
+
 from sqlalchemy import String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -17,3 +19,6 @@ class Dictionary(Base):
 
     ancient_word: Mapped[str] = mapped_column(String, primary_key=True)
     modern_definition: Mapped[str] = mapped_column(Text, nullable=False)
+    # Clean modern Thai equivalent extracted (by LLM) from the raw scholarly
+    # modern_definition entry. Nullable: empty until the extraction pipeline runs.
+    modern_word: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
