@@ -1,7 +1,13 @@
 """
-Embed every document's RAW description with BGE-M3 — full vector coverage now,
+Embed every document's RAW text with BGE-M3 — full vector coverage now,
 without waiting on modernization. (Modernization will be redone dictionary-grounded
 later, then re-embedded.) Resumable: skips rows that already have an embedding.
+
+Text source: `description` where present; otherwise falls back to `subject` (image
+records have description=null but a meaningful subject). Other metadata fields
+(accountName/branchName) are the same repeated label across many records, so they
+are intentionally NOT included — they would collapse distinct records to near-
+identical vectors.
 """
 import os
 import time
@@ -24,8 +30,10 @@ while True:
     with engine.connect() as c:
         rows = c.execute(
             text(
-                "SELECT id, json_data->>'description' AS d FROM documents "
-                "WHERE embedding IS NULL AND coalesce(json_data->>'description','') <> '' "
+                "SELECT id, coalesce(nullif(json_data->>'description',''), json_data->>'subject') AS d "
+                "FROM documents "
+                "WHERE embedding IS NULL "
+                "  AND coalesce(nullif(json_data->>'description',''), json_data->>'subject','') <> '' "
                 "ORDER BY id LIMIT :n"
             ),
             {"n": BATCH},
