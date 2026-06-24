@@ -14,3 +14,7 @@ PLAN.md
 skills-lock.json
 graphify-out
 PRODUCT.md
+db/*.pgc
+db/*.dump
+db/*.sql
+*.log
