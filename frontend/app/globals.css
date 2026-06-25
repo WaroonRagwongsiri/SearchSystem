@@ -264,6 +264,9 @@ main {
   margin: 0 auto;
   padding: var(--s-7) var(--s-5);
 }
+.container--wide {
+  max-width: 72rem; /* wider canvas for tables/forms; referenced alongside .container */
+}
 
 .footer {
   flex-shrink: 0;
@@ -620,6 +623,106 @@ textarea:focus {
 .page-title {
   font-size: var(--fs-700);
   margin-bottom: var(--s-2);
+}
+
+/* --- Dictionary table (add-word page) ------------------------------------- */
+.dict-section {
+  margin-top: var(--s-7);
+}
+.dict-section__title {
+  font-size: var(--fs-600);
+  margin-bottom: var(--s-2);
+}
+.dict-summary {
+  font-size: var(--fs-400);
+  color: var(--muted);
+  margin-bottom: var(--s-4);
+}
+.dict-summary span {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.dict-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+.dict-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-400);
+}
+.dict-table th,
+.dict-table td {
+  text-align: left;
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.dict-table thead th {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: var(--fs-300);
+  color: var(--muted);
+  background: var(--bg-raised);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+}
+.dict-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.dict-table tbody tr {
+  transition: background var(--dur) var(--ease);
+}
+.dict-table tbody tr:hover {
+  background: var(--bg-raised);
+}
+.dict-table__ancient {
+  white-space: nowrap;
+  font-weight: 600;
+}
+.dict-table__def {
+  color: var(--muted);
+  max-width: 30rem;
+  line-height: var(--leading-read);
+  word-break: break-word;
+}
+.dict-table__error {
+  color: var(--error);
+}
+.dict-table tr.is-pending {
+  opacity: 0.6;
+}
+
+/* status badges — reuse the warn/success/error tokens + soft fills */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--fs-300);
+  font-weight: 600;
+  padding: 0.15rem var(--s-2);
+  border-radius: var(--r-pill);
+  border: 1px solid transparent;
+  white-space: nowrap;
+  line-height: 1.5;
+}
+.badge--pending {
+  color: oklch(from var(--warn) calc(l - 0.28) c h);
+  background: var(--warn-soft);
+  border-color: oklch(from var(--warn) l c h / 0.3);
+}
+.badge--done {
+  color: oklch(from var(--success) calc(l - 0.28) c h);
+  background: var(--success-soft);
+  border-color: oklch(from var(--success) l c h / 0.3);
+}
+.badge--failed {
+  color: var(--error);
+  background: var(--error-soft);
+  border-color: oklch(from var(--error) l c h / 0.3);
 }
 
 /* --- Page size + select --------------------------------------------------- */

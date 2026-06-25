@@ -22,3 +22,10 @@ export async function addWordMap(ancient_word, modern_definition) {
   if (!res.ok) throw new Error(`add_new_word_map failed: ${res.status}`);
   return res.json();
 }
+
+export async function getDictionary({ limit = 25, offset = 0 } = {}) {
+  const url = `${API_URL}/dictionary?limit=${limit}&offset=${offset}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`dictionary fetch failed: ${res.status}`);
+  return res.json();
+}

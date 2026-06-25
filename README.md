@@ -87,6 +87,8 @@ docker compose up -d --build 			# builds pgvector from source (see db/Dockerfile
 docker compose cp backups/pocsearch.dump db:/tmp/pocsearch.dump
 docker compose exec -T db pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   --clean --if-exists -j 4 /tmp/pocsearch.dump
+# dump predates the dictionary status/error columns — add + backfill them (idempotent)
+docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < backend/migrate_dictionary_status.sql
 docker compose up -d --build backend frontend
 curl localhost:8000/health				# {documents: ~745691, embedded: ~745690, dictionary: 1097, ...}
 ```
@@ -140,7 +142,8 @@ docker compose up -d --build backend frontend
 | `GET` | `/health` | Corpus stats: documents / modernized / embedded / dictionary counts |
 | `GET` | `/search?q=&limit=&offset=&vector=true&min_score=` | Hybrid search |
 | `GET` | `/document/{id}` | Full raw source record for one document |
-| `POST` | `/add_new_word_map` | Upsert a dictionary mapping `{ancient_word, modern_definition}` |
+| `POST` | `/add_new_word_map` | Upsert `{ancient_word, modern_definition}`; if `LLM_ENDPOINT` is set, extracts the modern word synchronously and returns `{modern_word, status, error}` |
+| `GET` | `/dictionary?limit=&offset=` | Dictionary rows + per-status counts `{pending, done, failed}` (powers the Add-word table) |
 
 **`/search` parameters:**
 - `q` — query string (Thai)
@@ -173,13 +176,15 @@ curl "localhost:8000/document/<doc-uuid>"
 │   ├── config.py					# .env → DATABASE_URL (derived)
 │   ├── db.py						# SQLAlchemy engine + Base + SessionLocal
 │   ├── models.py					# Document, Dictionary
-│   ├── main.py						# FastAPI app: /search /health /document /add_new_word_map
+│   ├── main.py						# FastAPI app: /search /health /document /add_new_word_map /dictionary
 │   ├── ingest.py					# all_documents/*.json → documents (idempotent upsert, per-chunk commit)
 │   ├── embed_all_raw.py			# BGE-M3 embed raw description/subject (resumable, skips embedded rows)
 │   ├── modernize_embed.py			# modernize (LLM) + embed pipeline (resumable)
-│   ├── modernize_dictionary.py		# extract clean modern_word per dictionary entry
+│   ├── dict_extract.py				# pure modern-word extraction helper (shared by main.py + modernize_dictionary.py)
+│   ├── modernize_dictionary.py		# batch CLI: extract clean modern_word per dictionary entry (writes status/error)
 │   ├── seed_dictionary.py			# dict_โบราณ.csv → dictionary
 │   ├── migrate_search.sql			# search columns + GIN/trgm indexes (idempotent)
+│   ├── migrate_dictionary_status.sql		# dictionary status/error columns + done backfill (idempotent)
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── db/

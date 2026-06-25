@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from dict_extract import extract_modern_word
 from db import Base, SessionLocal, engine
 from models import Dictionary  # noqa: F401  (registers model on Base.metadata)
 
@@ -32,6 +33,11 @@ W_LEX, W_FUZZY, W_VEC = 0.6, 0.3, 0.1
 # RRF (hybrid) scores live on a ~100× smaller scale, so it defaults OFF there; override via ?min_score.
 MIN_SCORE_LEX = 0.15
 
+# --- modern-word extraction config (on-add extraction; graceful if LLM unset) ---
+_LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "").rstrip("/")
+LLM_CHAT = _LLM_ENDPOINT + "/v1/chat/completions" if _LLM_ENDPOINT else ""  # "" → add stays 'pending'
+LLM_MODEL = os.environ.get("LLM_MODEL", "Qwen/Qwen2.5-14B-Instruct")
+
 
 def get_db():
     db = SessionLocal()
@@ -48,15 +54,98 @@ class WordMap(BaseModel):
 
 @app.post("/add_new_word_map")
 def add_new_word_map(wm: WordMap, db: Session = Depends(get_db)):
-    """Upsert a historical→modern Thai word mapping, keyed on ancient_word."""
-    stmt = pg_insert(Dictionary).values(**wm.model_dump())
+    """Upsert a historical→modern mapping, then extract the modern word synchronously.
+
+    The row is written as status='pending' first (re-extract every save — the definition
+    may have changed, so modern_word/error are reset); if LLM_ENDPOINT is configured the
+    extraction runs inline and the row flips to done/failed before the response returns.
+    If LLM_ENDPOINT is unset it stays 'pending', deferred to a modernize_dictionary.py run.
+    """
+    stmt = pg_insert(Dictionary).values(
+        ancient_word=wm.ancient_word,
+        modern_definition=wm.modern_definition,
+        modern_word=None,
+        status="pending",
+        error=None,
+    )
     stmt = stmt.on_conflict_do_update(
         index_elements=["ancient_word"],
-        set_={"modern_definition": stmt.excluded.modern_definition},
+        set_={
+            "modern_definition": stmt.excluded.modern_definition,
+            "modern_word": None,
+            "status": "pending",
+            "error": None,
+        },
     )
     db.execute(stmt)
     db.commit()
-    return wm
+
+    status = "pending"
+    modern_word, error = None, None
+    if LLM_CHAT:  # synchronous extraction — ~1–2s; the UI shows the pending→done/failed flip
+        with httpx.Client(timeout=60) as c:  # ponytail: short-lived client — sync endpoint runs in a threadpool, no shared-client thread-safety
+            modern_word, error = extract_modern_word(
+                wm.ancient_word, wm.modern_definition, client=c, chat_url=LLM_CHAT, model=LLM_MODEL
+            )
+        status = "failed" if error else "done"
+        if error:
+            db.execute(
+                text("UPDATE dictionary SET status = 'failed', error = :e WHERE ancient_word = :w"),
+                {"e": error, "w": wm.ancient_word},
+            )
+        else:
+            db.execute(
+                text(
+                    "UPDATE dictionary SET modern_word = :m, status = 'done', error = NULL "
+                    "WHERE ancient_word = :w"
+                ),
+                {"m": modern_word, "w": wm.ancient_word},
+            )
+        db.commit()
+
+    return {
+        "ancient_word": wm.ancient_word,
+        "modern_definition": wm.modern_definition,
+        "modern_word": modern_word,
+        "status": status,
+        "error": error,
+    }
+
+
+@app.get("/dictionary")
+def dictionary(limit: int = 25, offset: int = 0, db: Session = Depends(get_db)):
+    """List dictionary rows (ordered by ancient_word) + per-status counts."""
+    rows = db.execute(
+        text(
+            "SELECT ancient_word, modern_definition, modern_word, status, error "
+            "FROM dictionary ORDER BY ancient_word LIMIT :limit OFFSET :offset"
+        ),
+        {"limit": limit, "offset": offset},
+    ).all()
+    counts = {
+        r[0]: r[1]
+        for r in db.execute(
+            text("SELECT coalesce(status, 'pending') AS s, count(*) FROM dictionary GROUP BY s")
+        ).all()
+    }
+    return {
+        "results": [
+            {
+                "ancient_word": r[0],
+                "modern_definition": r[1],
+                "modern_word": r[2],
+                "status": r[3] or "pending",
+                "error": r[4],
+            }
+            for r in rows
+        ],
+        "total": sum(counts.values()),
+        "counts": {
+            "pending": counts.get("pending", 0),
+            "done": counts.get("done", 0),
+            "failed": counts.get("failed", 0),
+        },
+    }
 
 
 def _embed_query(q: str) -> list[float]:

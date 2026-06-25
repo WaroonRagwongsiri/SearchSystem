@@ -22,3 +22,7 @@ class Dictionary(Base):
     # Clean modern Thai equivalent extracted (by LLM) from the raw scholarly
     # modern_definition entry. Nullable: empty until the extraction pipeline runs.
     modern_word: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Extraction-pipeline status of the modern_word above. NOTE: Base.metadata.create_all
+    # will NOT add these to an existing table — run backend/migrate_dictionary_status.sql.
+    status: Mapped[Optional[str]] = mapped_column(Text, default="pending")  # pending | done | failed
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # set only when status='failed'

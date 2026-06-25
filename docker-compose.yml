@@ -35,6 +35,7 @@ services:
       POSTGRES_HOST: db          # inside compose: reach the db service by name, not localhost
       POSTGRES_PORT: 5432
       EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT}  # query embedding for vector search
+      LLM_ENDPOINT: ${LLM_ENDPOINT}  # on-add modern-word extraction (graceful if unset)
     depends_on:
       db:
         condition: service_healthy
