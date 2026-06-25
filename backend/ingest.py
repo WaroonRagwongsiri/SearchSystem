@@ -20,16 +20,16 @@ parse_err: list[str] = []
 n_items = 0
 start = time.time()
 
-with engine.begin() as conn:
-    for f in FILES:
-        try:
-            items = json.load(open(f, encoding="utf-8")).get("items", [])
-        except Exception:
-            parse_err.append(Path(f).name)  # trust boundary: bad file → skip + log, don't crash
-            continue
-        n_items += len(items)
-        rows = [{"id": it["id"], "json_data": it} for it in items if it.get("id")]
-        for i in range(0, len(rows), CHUNK):
+for f in FILES:
+    try:
+        items = json.load(open(f, encoding="utf-8")).get("items", [])
+    except Exception:
+        parse_err.append(Path(f).name)  # trust boundary: bad file → skip + log, don't crash
+        continue
+    n_items += len(items)
+    rows = [{"id": it["id"], "json_data": it} for it in items if it.get("id")]
+    for i in range(0, len(rows), CHUNK):
+        with engine.begin() as conn:  # ponytail: commit per chunk, not one giant txn (OOM @7481 files)
             stmt = pg_insert(Document).values(rows[i:i + CHUNK])
             conn.execute(
                 stmt.on_conflict_do_update(
@@ -46,5 +46,5 @@ print(f"files skipped : {len(parse_err)}  {parse_err}")
 print(f"items seen    : {n_items}")
 print(f"rows in DB    : {stored}")
 print(f"elapsed       : {time.time() - start:.1f}s")
-assert stored == n_items == 313600, f"mismatch: stored={stored} items={n_items}"
+assert stored == n_items, f"mismatch: stored={stored} items={n_items}"  # ponytail: was hardcoded 313600; corpus grew
 print("OK: all items stored.")

@@ -17,4 +17,7 @@ PRODUCT.md
 db/*.pgc
 db/*.dump
 db/*.sql
+backups/*.dump
+backups/*.pgc
+backups/*.err
 *.log
