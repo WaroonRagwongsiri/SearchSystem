@@ -1,4 +1,4 @@
-export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export const API_URL = process.env.NEXT_PUBLIC_API_URL || "/api"; // same-origin; proxied to http://backend:8000 by next.config.mjs rewrites
 
 export async function search(q, { limit = 10, offset = 0, vector = true } = {}) {
   const url = `${API_URL}/search?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}&vector=${vector}`;

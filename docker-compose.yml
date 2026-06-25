@@ -21,6 +21,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    networks:
+      - pocsearch
 
   backend:
     build: ./backend
@@ -36,6 +38,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - pocsearch
 
   frontend:
     build: ./frontend
@@ -43,6 +47,12 @@ services:
       - "3000:3000"
     depends_on:
       - backend
+    networks:
+      - pocsearch
 
 volumes:
   pgdata:
+
+networks:
+  pocsearch:
+    driver: bridge

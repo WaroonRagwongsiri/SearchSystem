@@ -4,7 +4,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
 # NEXT_PUBLIC_* is baked into the client bundle at build time — the browser uses this to reach the backend.
-ENV NEXT_PUBLIC_API_URL=http://localhost:8000
+ENV NEXT_PUBLIC_API_URL=/api
 RUN npm run build
 
 # standalone output = self-contained server, no node_modules in the image
