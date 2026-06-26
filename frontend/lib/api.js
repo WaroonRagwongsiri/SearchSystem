@@ -29,3 +29,24 @@ export async function getDictionary({ limit = 25, offset = 0 } = {}) {
   if (!res.ok) throw new Error(`dictionary fetch failed: ${res.status}`);
   return res.json();
 }
+
+export async function getDocumentsByWord(word, { limit = 25, offset = 0 } = {}) {
+  const url = `${API_URL}/documents_by_word?word=${encodeURIComponent(word)}&limit=${limit}&offset=${offset}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`documents_by_word failed: ${res.status}`);
+  return res.json();
+}
+
+export async function reembed(docId, embed_text) {
+  const res = await fetch(`${API_URL}/reembed/${encodeURIComponent(docId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ embed_text }),
+  });
+  const data = await res.json().catch(() => ({}));
+  // 502 returns { ok:false, error }; 400/404 are FastAPI { detail } — surface either.
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || data.detail || `reembed failed: ${res.status}`);
+  }
+  return data;
+}

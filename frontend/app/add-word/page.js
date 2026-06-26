@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 import { addWordMap, getDictionary } from "@/lib/api";
 
 const PAGE_SIZE = 25;
@@ -35,17 +36,10 @@ export default function AddWordPage() {
     if (saving) return;
     setStatus(null);
     setSaving(true);
-    // optimistic: show the new word as pending immediately, before the ~1–2s extraction
-    const optimistic = {
-      ancient_word,
-      modern_definition,
-      modern_word: null,
-      status: "pending",
-      error: null,
-      _pending: true,
-    };
+    // optimistic: show the new word immediately (save is instant now — no extraction round-trip)
+    const optimistic = { ancient_word, modern_definition, _pending: true };
     setDict((d) => ({
-      ...(d ?? { total: 0, counts: { pending: 0, done: 0, failed: 0 } }),
+      ...(d ?? { total: 0, results: [] }),
       results: [optimistic, ...((d?.results) ?? [])].slice(0, PAGE_SIZE),
       total: (d?.total ?? 0) + 1,
     }));
@@ -54,22 +48,21 @@ export default function AddWordPage() {
       setStatus({ ok: true, msg: `Saved “${ancient_word}” → modern definition.` });
       setAncient("");
       setModern("");
-      // flip the optimistic row to the real done/failed result
       setDict((d) => ({
         ...d,
         results: (d.results ?? []).map((r) => (r._pending ? { ...row } : r)),
       }));
     } catch (err) {
       setStatus({ ok: false, msg: err.message });
+      // save failed — drop the optimistic row; the banner carries the error
       setDict((d) => ({
         ...d,
-        results: (d.results ?? []).map((r) =>
-          r._pending ? { ...r, status: "failed", error: err.message } : r
-        ),
+        total: Math.max(0, (d?.total ?? 1) - 1),
+        results: (d.results ?? []).filter((r) => !r._pending),
       }));
     } finally {
       setSaving(false);
-      loadDict(page); // refetch for accurate counts / ordering
+      loadDict(page); // refetch for accurate ordering
     }
   }
 
@@ -106,7 +99,7 @@ export default function AddWordPage() {
           className="btn btn--primary"
           disabled={saving || !ancient_word.trim() || !modern_definition.trim()}
         >
-          {saving ? "Extracting…" : "Save mapping"}
+          {saving ? "Saving…" : "Save mapping"}
         </button>
       </form>
 
@@ -143,10 +136,7 @@ function DictionaryTable({ dict, error, page, onPage }) {
       {dict && (
         <>
           <p className="dict-summary tnum">
-            <span>{dict.total.toLocaleString()}</span> words ·{" "}
-            <span>{dict.counts.done.toLocaleString()}</span> done ·{" "}
-            <span>{dict.counts.pending.toLocaleString()}</span> in progress ·{" "}
-            <span>{dict.counts.failed.toLocaleString()}</span> failed
+            <span>{dict.total.toLocaleString()}</span> words
           </p>
 
           {dict.results.length === 0 ? (
@@ -157,26 +147,22 @@ function DictionaryTable({ dict, error, page, onPage }) {
                 <thead>
                   <tr>
                     <th>Ancient</th>
-                    <th>Modern word</th>
-                    <th>Status</th>
-                    <th>Definition / error</th>
+                    <th>Definition</th>
                   </tr>
                 </thead>
                 <tbody>
                   {dict.results.map((r) => (
                     <tr key={r._pending ? "__pending__" : r.ancient_word} className={r._pending ? "is-pending" : ""}>
-                      <td className="serif dict-table__ancient">{r.ancient_word}</td>
-                      <td className="serif">{r.modern_word ?? "—"}</td>
-                      <td>
-                        <StatusBadge status={r.status} />
-                      </td>
-                      <td className="dict-table__def">
-                        {r.status === "failed" && r.error ? (
-                          <span className="dict-table__error">{r.error}</span>
+                      <td className="serif dict-table__ancient">
+                        {r._pending ? (
+                          r.ancient_word
                         ) : (
-                          r.modern_definition
+                          <Link href={`/review/${encodeURIComponent(r.ancient_word)}`}>
+                            {r.ancient_word} <span className="muted">→ review</span>
+                          </Link>
                         )}
                       </td>
+                      <td className="dict-table__def">{r.modern_definition}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -205,14 +191,4 @@ function DictionaryTable({ dict, error, page, onPage }) {
       )}
     </section>
   );
-}
-
-function StatusBadge({ status }) {
-  const map = {
-    pending: { cls: "badge--pending", label: "In progress" },
-    done: { cls: "badge--done", label: "Done" },
-    failed: { cls: "badge--failed", label: "Failed" },
-  };
-  const { cls, label } = map[status] ?? map.pending;
-  return <span className={`badge ${cls}`}>{label}</span>;
 }

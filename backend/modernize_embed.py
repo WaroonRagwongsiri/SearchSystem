@@ -34,13 +34,13 @@ EMBED_BATCH = 64
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_size=WORKERS + 4, max_overflow=0)
 
 # Load dictionary once; modernization prompts include only entries whose ancient_word is in the text.
-# Inject the clean modern equivalent (modern_word, from modernize_dictionary.py) where present;
-# fall back to the raw scholarly entry otherwise.
+# ponytail: dictionary context is CSV-sourced (modern_definition only); modern_word is abandoned —
+# it was LLM-fabricated and must not enter the modernize prompt. Matches backend/main._dict_context.
 with engine.connect() as _c:
     DICT = [
-        (r[0], r[1] or r[2])
+        (r[0], r[1])
         for r in _c.execute(
-            text("SELECT ancient_word, modern_word, modern_definition FROM dictionary")
+            text("SELECT ancient_word, modern_definition FROM dictionary")
         ).all()
     ]
 print(f"loaded {len(DICT)} dictionary entries", flush=True)
@@ -128,10 +128,13 @@ def run_embed() -> int:
     start = time.time()
     while True:
         with engine.connect() as c:
+            # coalesce(embed_text, modernized_content): honor a human /reembed override when
+            # re-running the bulk pipeline; NULL ⇒ fall back to the LLM's modernized_content.
             rows = c.execute(
                 text(
-                    "SELECT id, modernized_content FROM documents "
-                    "WHERE embedding IS NULL AND modernized_content IS NOT NULL LIMIT :n"
+                    "SELECT id, coalesce(embed_text, modernized_content) AS text FROM documents "
+                    "WHERE embedding IS NULL AND coalesce(embed_text, modernized_content) IS NOT NULL "
+                    "LIMIT :n"
                 ),
                 {"n": EMBED_BATCH},
             ).all()

@@ -35,6 +35,9 @@ export default function RootLayout({ children }) {
             <Link href="/add-word" className="nav__link">
               Add word map
             </Link>
+            <Link href="/review" className="nav__link">
+              Review
+            </Link>
           </div>
         </nav>
         <main>{children}</main>
