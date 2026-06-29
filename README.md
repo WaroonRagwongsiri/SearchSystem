@@ -21,7 +21,9 @@ Hybrid search (**lexical + fuzzy + vector**) over a corpus of **historical Thai 
 
 ## Data model
 
-Two tables (see `backend/models.py`, `backend/migrate_search.sql`):
+**Schema lookup:** the canonical schema is [`backups/schema.sql`](backups/schema.sql) — a committed, schema-only `pg_dump` (extensions, tables, indexes, generated-column definitions). Read that when you need the exact current DDL; also reflected in `backend/models.py` (ORM) + the `backend/migrate_*.sql` files.
+
+Two tables:
 
 **`documents`** — one row per source item (keyed by item UUID `id`), ~745,691 rows.
 - `id` (PK), `json_data` (JSONB — the raw source record)
@@ -29,9 +31,11 @@ Two tables (see `backend/models.py`, `backend/migrate_search.sql`):
 - `search_tsvector` *(generated, stored)* — `to_tsvector('simple', description)`, GIN-indexed
 - `modernized_content` — LLM-modernized Thai (internal scratch for the embed pipeline; **not searched, not shown**)
 - `embedding` — `vector(1024)` (BGE-M3), HNSW-indexed (cosine)
+- `embed_text` — human override of the embed input; NULL ⇒ fall back to `modernized_content`. Written by `/reembed` + the embed pipeline; this (or `modernized_content`) is what the vector index actually holds
 
 **`dictionary`** — 1,097 historical→modern Thai word mappings (from `dict_โบราณ.csv`).
-- `ancient_word` (PK), `modern_definition` (raw scholarly entry), `modern_word` (clean modern equivalent, LLM-extracted)
+- `ancient_word` (PK), `modern_definition` (raw scholarly entry), `modern_word` (dormant — legacy LLM extraction, no longer written)
+- `status` (`pending` | `done` | `failed`, default `pending`), `error` (set only on `failed`) — dictionary extraction status; upserts set `status='done'`
 
 **Indexes:** `documents_embedding_hnsw_idx` (HNSW, cosine), `documents_search_tsvector_idx` (GIN), `documents_raw_trgm_idx` (GIN trigram), plus PKs.
 
@@ -87,8 +91,9 @@ docker compose up -d --build 			# builds pgvector from source (see db/Dockerfile
 docker compose cp backups/pocsearch.dump db:/tmp/pocsearch.dump
 docker compose exec -T db pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   --clean --if-exists -j 4 /tmp/pocsearch.dump
-# dump predates the dictionary status/error columns — add + backfill them (idempotent)
+# dump predates the dictionary status/error + documents embed_text columns — add + backfill them (idempotent)
 docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < backend/migrate_dictionary_status.sql
+docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < backend/migrate_embed_text.sql
 docker compose up -d --build backend frontend
 curl localhost:8000/health				# {documents: ~745691, embedded: ~745690, dictionary: 1097, ...}
 ```
@@ -185,6 +190,7 @@ curl "localhost:8000/document/<doc-uuid>"
 │   ├── seed_dictionary.py			# dict_โบราณ.csv → dictionary
 │   ├── migrate_search.sql			# search columns + GIN/trgm indexes (idempotent)
 │   ├── migrate_dictionary_status.sql		# dictionary status/error columns + done backfill (idempotent)
+│   ├── migrate_embed_text.sql			# documents embed_text column (idempotent)
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── db/

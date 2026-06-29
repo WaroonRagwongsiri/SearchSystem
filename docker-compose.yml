@@ -13,7 +13,12 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      # ponytail: 5434 not 5432 — host port 5432 is held by a stale Docker Desktop
+      # proxy (collateral from a prior teardown). Internal container port stays 5432,
+      # so the backend still reaches db:5432 over the network. NOTE: .env still says
+      # POSTGRES_PORT=5432 for host scripts; to run ingest/seed from the host, either
+      # restart Docker to reclaim 5432 or set .env POSTGRES_PORT=5434.
+      - "5434:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -27,7 +32,11 @@ services:
   backend:
     build: ./backend
     ports:
-      - "8000:8000"
+      # ponytail: 8002 not 8000 — host port 8000 is held by a stale Docker Desktop
+      # port-forward proxy from a prior torn-down run; 8001 is a real uvicorn dev server
+      # from another project (don't touch). Internal container port stays 8000, so
+      # next.config.mjs rewrites (http://backend:8000) are unaffected.
+      - "8002:8000"
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -45,7 +54,8 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "3000:3000"
+      # ponytail: 3001 not 3000 — host port 3000 held by a stale Docker Desktop proxy.
+      - "3001:3000"
     depends_on:
       - backend
     networks:

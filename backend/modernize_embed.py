@@ -69,7 +69,7 @@ def client() -> httpx.Client:
     return c
 
 
-def modernize(doc_id: str, desc: str) -> tuple[str, str | None, str | None]:
+def modernize(doc_id: str, text: str) -> tuple[str, str | None, str | None]:
     """Return (id, modernized_text_or_None, error_or_None)."""
     try:
         r = client().post(
@@ -78,7 +78,7 @@ def modernize(doc_id: str, desc: str) -> tuple[str, str | None, str | None]:
                 "model": LLM_MODEL,
                 "messages": [
                     {"role": "system", "content": SYSTEM},
-                    {"role": "user", "content": f"Dictionary (use where relevant): {context_for(desc)}\n\nHistorical text: {desc}\n\nModern Thai:"},
+                    {"role": "user", "content": f"Dictionary (use where relevant): {context_for(text)}\n\nHistorical text: {text}\n\nModern Thai:"},
                 ],
                 "temperature": 0.2,
                 "max_tokens": 512,
