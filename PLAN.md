@@ -55,6 +55,30 @@ A hybrid search system (Lexical + Fuzzy + Vector) with LLM-based modernization f
     - [ ] Modernization Call: Send text + dictionary context to LLM Endpoint.
       **Partial** — `modernized_content` holds ~94.5k rows of *free-form* LLM output from an
       earlier run, **not** the intended dictionary-grounded modernization. Needs a proper re-run.
+
+      **Endpoint re-pointed (2026-06-30)** to the ModelHarbor OpenAI-compatible gateway
+      (`https://localmodel-package.modelharbor.com`, Bearer auth via `MODEL_API_KEY`),
+      model `Qwen/Qwen3.6-35B-A3B` (a *thinking* model), embedder stays `baai/bge-m3`
+      (1024-d, no schema change), reranker `jina_ai/jina-reranker-v3` configured but
+      **not wired into /search**. All call sites updated + verified end-to-end.
+
+      **Smoke test (`PIPELINE_LIMIT=5`, 2026-06-30) — NOT ready for a full re-run.** Two issues
+      found against the new model; the design (dict as context) is sound, the model is the risk:
+      - **Truncation (27% of 364 docs):** at `max_tokens=2048` the thinking model runs out of
+        tokens mid-`reasoning_content` and `content` comes back empty. Raising to `4096` fixes
+        it on tested cases (and the over-modernization below was partly a truncation artifact —
+        truncated `content` surfaced a half-formed paraphrase, not the settled answer). Code
+        reads `content` only (never `reasoning_content`); empty ⇒ error+retry, not stored.
+      - **Ungrounded substitutions / hallucination:** the model reasons about *meaning* and
+        sometimes swaps words the dictionary does not justify — e.g. `พระนคร`→`กรุงเทพฯ`,
+        `เฑิรพ์`→`เทวรูป` (a different word, not a spelling fix). A spelling-only prompt did
+        NOT stop this. The old 94.5k rows have the same problem worse (some emit Chinese,
+        convert dates — e.g. `(จ.ศ. 1241)`→`พ.ศ. 2384`).
+      **Decision pending:** accept free-form modernization (fix truncation only, ship) vs.
+      enforce dictionary-grounded substitution (needs a reliability fix beyond prompt tuning —
+      e.g. a smaller non-thinking model, or post-hoc validation that the rewrite only touches
+      spans covered by a dict entry). Embeddings already work over raw text regardless, so the
+      LLM step can be deferred without blocking vector search.
     - [x] Embedding Call: Send text to BGE-M3 Endpoint. **Done over RAW text** (`backend/embed_all_raw.py`,
       ~745k rows embedded) — vector search works fully without the modernization re-run.
     - [x] Update `Document` table with `modernized_content` and `embedding`.

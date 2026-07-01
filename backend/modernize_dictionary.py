@@ -27,7 +27,9 @@ from config import DATABASE_URL  # importing config runs load_dotenv()
 from dict_extract import extract_modern_word
 
 LLM_CHAT = os.environ["LLM_ENDPOINT"].rstrip("/") + "/v1/chat/completions"
-LLM_MODEL = os.environ.get("LLM_MODEL", "Qwen/Qwen2.5-14B-Instruct")
+LLM_MODEL = os.environ.get("LLM_MODEL", "Qwen/Qwen3.6-35B-A3B")
+_API_KEY = os.environ.get("MODEL_API_KEY", "").strip()
+_HEADERS = {"Authorization": f"Bearer {_API_KEY}"} if _API_KEY else {}  # gateway requires Bearer; empty ⇒ unauth endpoint
 LIMIT = int(os.environ.get("PIPELINE_LIMIT", "0"))  # 0 = no limit
 WORKERS = int(os.environ.get("PIPELINE_WORKERS", "16"))
 FETCH_BATCH = 500
@@ -41,7 +43,7 @@ def client() -> httpx.Client:
     # ponytail: thread-local — httpx.Client is not thread-safe and the pool fans out across threads.
     c = getattr(_tls, "client", None)
     if c is None:
-        c = httpx.Client(timeout=60)
+        c = httpx.Client(timeout=60, headers=_HEADERS)
         _tls.client = c
     return c
 

@@ -44,7 +44,12 @@ services:
       POSTGRES_HOST: db          # inside compose: reach the db service by name, not localhost
       POSTGRES_PORT: 5432
       EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT}  # query embedding for vector search
-      LLM_ENDPOINT: ${LLM_ENDPOINT}  # on-add modern-word extraction (graceful if unset)
+      LLM_ENDPOINT: ${LLM_ENDPOINT}  # modernize step (the one retained LLM call)
+      RERANK_ENDPOINT: ${RERANK_ENDPOINT}  # config only — not wired into /search yet
+      MODEL_API_KEY: ${MODEL_API_KEY}    # Bearer token the model gateway requires
+      LLM_MODEL: ${LLM_MODEL}            # case-sensitive on this gateway
+      EMBED_MODEL: ${EMBED_MODEL}        # lowercase baai/bge-m3 (BAAI/ is rejected)
+      RERANK_MODEL: ${RERANK_MODEL}      # config only — not wired into /search yet
     depends_on:
       db:
         condition: service_healthy

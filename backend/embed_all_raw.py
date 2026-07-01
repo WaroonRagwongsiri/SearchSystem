@@ -18,11 +18,13 @@ from sqlalchemy import create_engine, text
 from config import DATABASE_URL  # importing config runs load_dotenv()
 
 EMBED_URL = os.environ["EMBEDDING_ENDPOINT"].rstrip("/") + "/v1/embeddings"
-EMBED_MODEL = os.environ.get("EMBED_MODEL", "BAAI/bge-m3")
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "baai/bge-m3")  # lowercase on this gateway (BAAI/ is rejected)
+_API_KEY = os.environ.get("MODEL_API_KEY", "").strip()
+_headers = {"Authorization": f"Bearer {_API_KEY}"} if _API_KEY else {}  # gateway requires Bearer; empty ⇒ unauth endpoint
 BATCH = 64
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-client = httpx.Client(timeout=120)
+client = httpx.Client(timeout=120, headers=_headers)
 
 done = 0
 start = time.time()

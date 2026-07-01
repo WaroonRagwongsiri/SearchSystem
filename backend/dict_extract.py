@@ -73,11 +73,16 @@ def extract_modern_word(ancient, definition, *, client, chat_url, model):
                     )},
                 ],
                 "temperature": 0,
-                "max_tokens": 48,
+                # Qwen3.6-35B-A3B is a thinking model: it emits a long reasoning_content
+                # (internal monologue) before the final answer in content. We read ONLY
+                # content — never reasoning_content (that's scratchpad, not the answer) —
+                # and budget max_tokens so thinking finishes and the answer lands in
+                # content. 48 tokens truncates mid-reasoning and leaves content null.
+                "max_tokens": 1024,
             },
         )
         r.raise_for_status()
-        mod = _clean(r.json()["choices"][0]["message"]["content"])
+        mod = _clean(r.json()["choices"][0]["message"].get("content") or "")
         # Reject garbage (non-Thai / over-long); fall back to the word itself.
         if not _valid_thai(mod):
             mod = ancient

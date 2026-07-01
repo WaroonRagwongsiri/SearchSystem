@@ -20,7 +20,9 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 # --- search config (deliberate, not arbitrary — see CLAUDE.md "algorithms to get right") ---
 EMBED_URL = os.environ.get("EMBEDDING_ENDPOINT", "").rstrip("/") + "/v1/embeddings"
-EMBED_MODEL = os.environ.get("EMBED_MODEL", "BAAI/bge-m3")
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "baai/bge-m3")  # lowercase on this gateway (BAAI/ is rejected)
+_API_KEY = os.environ.get("MODEL_API_KEY", "").strip()
+AUTH = {"Authorization": f"Bearer {_API_KEY}"} if _API_KEY else {}  # gateway requires Bearer; empty ⇒ unauth endpoint
 RRF_K = 60            # standard RRF constant
 CANDIDATES = 100      # per-signal candidate pool before fusion
 # per-signal weights: lexical (tsvector) dominant, fuzzy (trigram) secondary, vector least — per ranking spec.
@@ -117,7 +119,7 @@ def dictionary(limit: int = 25, offset: int = 0, db: Session = Depends(get_db)):
 
 
 def _embed_query(q: str) -> list[float]:
-    r = httpx.post(EMBED_URL, json={"model": EMBED_MODEL, "input": [q]}, timeout=30)
+    r = httpx.post(EMBED_URL, headers=AUTH, json={"model": EMBED_MODEL, "input": [q]}, timeout=30)
     r.raise_for_status()
     return r.json()["data"][0]["embedding"]
 

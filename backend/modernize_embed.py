@@ -24,8 +24,10 @@ from config import DATABASE_URL  # importing config runs load_dotenv()
 
 LLM_CHAT = os.environ["LLM_ENDPOINT"].rstrip("/") + "/v1/chat/completions"
 EMBED_URL = os.environ["EMBEDDING_ENDPOINT"].rstrip("/") + "/v1/embeddings"
-LLM_MODEL = os.environ.get("LLM_MODEL", "Qwen/Qwen2.5-14B-Instruct")
-EMBED_MODEL = os.environ.get("EMBED_MODEL", "BAAI/bge-m3")
+LLM_MODEL = os.environ.get("LLM_MODEL", "Qwen/Qwen3.6-35B-A3B")
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "baai/bge-m3")  # lowercase on this gateway (BAAI/ is rejected)
+_API_KEY = os.environ.get("MODEL_API_KEY", "").strip()
+_HEADERS = {"Authorization": f"Bearer {_API_KEY}"} if _API_KEY else {}  # gateway requires Bearer; empty ⇒ unauth endpoint
 LIMIT = int(os.environ.get("PIPELINE_LIMIT", "0"))  # 0 = no limit
 WORKERS = int(os.environ.get("PIPELINE_WORKERS", "16"))
 FETCH_BATCH = 500
@@ -46,8 +48,15 @@ with engine.connect() as _c:
 print(f"loaded {len(DICT)} dictionary entries", flush=True)
 
 SYSTEM = (
-    "You rewrite historical Thai into modern Thai. "
-    "Output ONLY the modernized Thai text. No preamble, no quotes, no explanation."
+    "You modernize the SPELLING of historical Thai text. Apply ONLY these changes: "
+    "substitute obsolete letter forms to current Thai orthography "
+    "(e.g. เฑียร->เทียร, ฑ->น, ฎ->ด, ฏ->ต) and archaic spellings explicitly listed in the dictionary. "
+    "DO NOT paraphrase, reword, reorder, expand, or drop anything. "
+    "DO NOT 'correct' what you think is a typo — archaic-looking strings inside PERSONAL NAMES "
+    "(after นาย/หลวง/ขุน/พระ etc.) and PLACE NAMES are proper nouns, NOT misspellings; "
+    "keep them EXACTLY as written. "
+    "If no spelling from the dictionary applies, output the text UNCHANGED. "
+    "Output ONLY the result text, no preamble, no quotes, no explanation."
 )
 
 
@@ -64,13 +73,22 @@ _tls = threading.local()
 def client() -> httpx.Client:
     c = getattr(_tls, "client", None)
     if c is None:
-        c = httpx.Client(timeout=60)
+        c = httpx.Client(timeout=60, headers=_HEADERS)
         _tls.client = c
     return c
 
 
 def modernize(doc_id: str, text: str) -> tuple[str, str | None, str | None]:
-    """Return (id, modernized_text_or_None, error_or_None)."""
+    """Return (id, modernized_text_or_None, error_or_None).
+
+    Qwen3.6-35B-A3B is a *thinking* model: it emits a long `reasoning_content`
+    (internal monologue) before the final answer in `content`. We read ONLY
+    `content` — never reasoning_content, that's scratchpad, not the answer —
+    and budget max_tokens so thinking finishes and the answer lands in content.
+    If content is empty (thinking ran to the cap before answering), that's a
+    truncation, not a modernization; return it as an error so the row retries
+    rather than storing a blank or a reasoning trace.
+    """
     try:
         r = client().post(
             LLM_CHAT,
@@ -81,12 +99,14 @@ def modernize(doc_id: str, text: str) -> tuple[str, str | None, str | None]:
                     {"role": "user", "content": f"Dictionary (use where relevant): {context_for(text)}\n\nHistorical text: {text}\n\nModern Thai:"},
                 ],
                 "temperature": 0.2,
-                "max_tokens": 512,
+                "max_tokens": 4096,
             },
         )
         r.raise_for_status()
-        mod = r.json()["choices"][0]["message"]["content"].strip()
-        return (doc_id, mod or None, None)
+        mod = (r.json()["choices"][0]["message"].get("content") or "").strip()
+        if not mod:
+            return (doc_id, None, "empty content (thinking truncated before answer)")
+        return (doc_id, mod, None)
     except Exception as e:  # trust boundary: one bad doc must not kill the run
         return (doc_id, None, str(e)[:200])
 
